@@ -666,3 +666,63 @@ Resume + Job Description
 ## 📄 License
 
 This project is intended for educational and portfolio purposes.
+
+## Phase 1 setup
+
+The current Phase 1 implementation includes a minimal FastAPI backend and React frontend.
+
+### Backend
+
+```bash
+cd backend
+python -m venv .venv
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+The health endpoint is available at `http://127.0.0.1:8000/health` and returns `{"status":"ok"}`.
+
+### Phase 2: PDF extraction
+
+The backend accepts a PDF in memory, validates it with PyMuPDF, extracts text page by page, cleans excessive whitespace, and returns both complete text and numbered page text. Image-only/scanned PDFs return a clear error because OCR is not implemented yet. The default maximum upload size is 10 MB and can be changed with `MAX_PDF_SIZE_MB`.
+
+Endpoint: `POST /api/documents/extract` (multipart field: `file`).
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/documents/extract -F "file=@resume.pdf"
+```
+
+Example response:
+
+```json
+{
+  "filename": "resume.pdf",
+  "page_count": 2,
+  "text": "Jane Doe\nPython Developer\n\nExperience...",
+  "pages": [
+    {"page_number": 1, "text": "Jane Doe\nPython Developer"},
+    {"page_number": 2, "text": "Experience..."}
+  ]
+}
+```
+
+Run backend tests with:
+
+```bash
+cd backend
+pytest
+```
+
+### Frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. Vite proxies `/api` requests to the backend. PDF processing, embeddings, similarity, LLM integration, authentication, and persistence are intentionally deferred.
