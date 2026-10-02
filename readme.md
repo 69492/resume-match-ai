@@ -726,3 +726,100 @@ npm run dev
 ```
 
 Open `http://localhost:5173`. Vite proxies `/api` requests to the backend. PDF processing, embeddings, similarity, LLM integration, authentication, and persistence are intentionally deferred.
+
+### Phase 3: structured extraction
+
+Phase 3 adds deterministic, rule-based extraction from PDF text. It detects common section headings, normalizes a controlled set of skills, removes duplicates, and preserves source page/text for resume entries. Phase 3 uses deterministic extraction and does not use an LLM.
+
+Endpoints:
+
+```text
+POST /api/resume/extract
+POST /api/job-description/extract
+```
+
+Both accept one PDF in the multipart `file` field:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/resume/extract -F "file=@resume.pdf"
+curl -X POST http://127.0.0.1:8000/api/job-description/extract -F "file=@job-description.pdf"
+```
+
+Example resume response:
+
+```json
+{
+  "text": "Skills\nPython\nExperience\nBackend Developer",
+  "skills": ["Python"],
+  "programming_languages": ["Python"],
+  "frameworks": [],
+  "libraries": [],
+  "tools": [],
+  "databases": [],
+  "cloud": [],
+  "experience": [{"text": "Backend Developer", "page_number": 1, "source_text": "...", "role": null, "company": null, "duration": null}],
+  "projects": [],
+  "education": [],
+  "certifications": []
+}
+```
+
+Limitations: extraction is conservative and supports common headings plus a fixed skill vocabulary. It does not perform OCR, semantic inference, embeddings, matching, or LLM analysis. Plain-text JD input is not enabled yet; PDF input is supported.
+
+### Phase 4: embeddings
+
+Phase 4 converts meaningful Phase 3 resume and job-description units into local semantic embeddings using `all-MiniLM-L6-v2`. The model produces normalized vectors with dimension 384 and is loaded lazily once per application process. Resume skills, experience, and projects are represented separately; JD required/preferred skills, responsibilities, and experience requirements are also separate units.
+
+Endpoint:
+
+```http
+POST /api/embeddings/generate
+```
+
+Example request:
+
+```json
+{
+  "resume": {
+    "skills": ["Python", "FastAPI"],
+    "experience": [{"text": "Built REST APIs using FastAPI"}],
+    "projects": []
+  }
+}
+```
+
+Example response structure:
+
+```json
+{
+  "model": "all-MiniLM-L6-v2",
+  "dimension": 384,
+  "items": [
+    {"source_type": "resume_skill", "text": "Python", "embedding": [0.01, 0.02]}
+  ]
+}
+```
+
+The actual embedding array contains 384 values. Phase 4 generates semantic embeddings. Similarity calculation is implemented in Phase 5. No API key is required, but the model package and model files must be available locally. Empty or duplicate units are removed, and empty documents are rejected.
+
+### Phase 5: similarity engine
+
+The similarity engine compares each required and preferred JD embedding against all resume embedding units using cosine similarity, retaining only the best resume match for each requirement. It preserves requirement type, matched text, source type, and page number.
+
+Endpoint:
+
+```http
+POST /api/similarity/analyze
+```
+
+The request contains already-generated embedding units and does not regenerate embeddings:
+
+```json
+{
+  "resume_items": [{"text": "Python", "source_type": "resume_skill", "embedding": [1, 0]}],
+  "required_items": [{"text": "Python", "source_type": "jd_required", "embedding": [1, 0]}],
+  "preferred_items": []
+}
+```
+
+Categories use configurable initial thresholds: strong `>= 0.80`, partial `0.55–<0.80`, and missing `< 0.55`. These are engineering defaults, not scientifically validated thresholds. Phase 5 calculates requirement-level semantic similarity. Overall resume match scoring is implemented in Phase 6.
