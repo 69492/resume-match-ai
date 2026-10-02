@@ -3,4 +3,4 @@ uvicorn[standard]
 pymupdf
 python-multipart
 httpx
-sentence-transformers
+fastembed

@@ -809,7 +809,7 @@ For Vercel, set `VITE_API_BASE_URL` to the deployed Render HTTPS URL. Do not add
 
 Local development continues to use `FRONTEND_ORIGIN=http://localhost:5173` and `VITE_API_BASE_URL=http://127.0.0.1:8000`. Copy the example environment files rather than committing `.env` files.
 
-Deployment limitations include Render cold starts, CPU/RAM constraints during sentence-transformers model loading, LLM provider cost and rate limits, request timeouts, and large-PDF processing time. A real production deployment and real-document LLM test require access to the Render/Vercel accounts and a configured provider key; no external deployment was performed in this workspace.
+Deployment limitations include Render cold starts, CPU/RAM constraints during FastEmbed/ONNX model loading, LLM provider cost and rate limits, request timeouts, and large-PDF processing time. A real production deployment and real-document LLM test require access to the Render/Vercel accounts and a configured provider key; no external deployment was performed in this workspace.
 
 ### Phase 11: testing and hardening
 
@@ -936,7 +936,7 @@ Limitations: extraction is conservative and supports common headings plus a fixe
 
 ### Phase 4: embeddings
 
-Phase 4 converts meaningful Phase 3 resume and job-description units into local semantic embeddings using `all-MiniLM-L6-v2`. The model produces normalized vectors with dimension 384 and is loaded lazily once per application process. Resume skills, experience, and projects are represented separately; JD required/preferred skills, responsibilities, and experience requirements are also separate units.
+Phase 4 converts meaningful Phase 3 resume and job-description units into local semantic embeddings using FastEmbed with the quantized ONNX model `BAAI/bge-small-en-v1.5`. The model produces normalized 384-dimensional vectors and is loaded lazily once per application process on CPU. FastEmbed/ONNX is used instead of Sentence Transformers/PyTorch to reduce Render Free-tier memory pressure. Resume skills, experience, and projects are represented separately; JD required/preferred skills, responsibilities, and experience requirements are also separate units.
 
 Endpoint:
 
@@ -960,7 +960,7 @@ Example response structure:
 
 ```json
 {
-  "model": "all-MiniLM-L6-v2",
+  "model": "BAAI/bge-small-en-v1.5",
   "dimension": 384,
   "items": [
     {"source_type": "resume_skill", "text": "Python", "embedding": [0.01, 0.02]}
