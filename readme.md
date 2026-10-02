@@ -773,6 +773,68 @@ React dashboard
 
 The frontend calls only `/api/analyze` for a real analysis. The orchestration service reuses the Phase 3–8 services and does not persist uploaded files. Configure `FRONTEND_ORIGIN` in the backend environment for local CORS and `VITE_API_BASE_URL` in the frontend environment for the API base URL. The frontend applies a two-minute request timeout and displays a safe user-facing error.
 
+### Phase 12: production deployment
+
+The deployment target is:
+
+```text
+Vercel React frontend
+        ↓ HTTPS
+Render FastAPI backend
+        ↓
+Embedding model + OpenAI-compatible LLM provider
+```
+
+Render configuration is provided in `render.yaml`. The backend uses:
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Render health checks use `GET /health`. Uploaded PDFs remain in memory and are not persisted. The embedding model is loaded lazily and cached for the backend process; the first analysis after a cold start may take longer while model files are obtained.
+
+Required Render environment variables:
+
+```text
+LLM_API_KEY=<provider secret; Render only>
+LLM_MODEL=gpt-4o-mini
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_TIMEOUT_SECONDS=30
+FRONTEND_ORIGIN=https://<your-vercel-domain>
+MAX_PDF_SIZE_MB=10
+```
+
+For Vercel, set `VITE_API_BASE_URL` to the deployed Render HTTPS URL. Do not add `LLM_API_KEY` to Vercel or any `VITE_*` variable. The Vercel build uses `npm run build` and publishes `dist`; `frontend/vercel.json` contains the SPA configuration.
+
+Local development continues to use `FRONTEND_ORIGIN=http://localhost:5173` and `VITE_API_BASE_URL=http://127.0.0.1:8000`. Copy the example environment files rather than committing `.env` files.
+
+Deployment limitations include Render cold starts, CPU/RAM constraints during sentence-transformers model loading, LLM provider cost and rate limits, request timeouts, and large-PDF processing time. A real production deployment and real-document LLM test require access to the Render/Vercel accounts and a configured provider key; no external deployment was performed in this workspace.
+
+### Phase 11: testing and hardening
+
+Phase 11 adds regression coverage for upload validation, safe API errors, CORS restrictions, path-traversal filenames, HTML document content, pipeline stage failures, deterministic score authority, and malformed backend responses. Uploaded files are read and processed in memory; filenames are never used as filesystem paths.
+
+Run the backend tests with:
+
+```bash
+cd backend
+pytest tests -p no:cacheprovider
+```
+
+Build the frontend with:
+
+```bash
+cd frontend
+npm run build
+```
+
+For a local end-to-end check, configure `LLM_API_KEY`, start the backend with `uvicorn app.main:app --reload`, start the frontend with `npm run dev`, upload a resume PDF and job-description PDF, and confirm the verified score, matches, evidence, projects, recommendations, and validation summary. If no LLM provider is configured, the API fails safely rather than substituting fake production analysis.
+
+Security notes: `.env` files are ignored, only `.env.example` files are tracked, CORS is restricted to `FRONTEND_ORIGIN`, LLM credentials remain backend-only, provider errors do not expose credentials, and document text is treated as untrusted data. Swagger documentation is available at `/docs`, including `POST /api/analyze`.
+
+Known limitations remain: OCR is not implemented, the local embedding model must be available, the LLM provider is required for real analysis, and deterministic evidence checks are conservative rather than a complete fact checker.
+
 ## Phase 1 setup
 
 The current Phase 1 implementation includes a minimal FastAPI backend and React frontend.

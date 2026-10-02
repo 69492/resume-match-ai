@@ -3,11 +3,12 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from app.services.analysis_pipeline_service import AnalysisPipelineError, analyze_documents
 from app.services.analysis_service import AnalysisValidationError
 from app.services.llm_service import LLMConfigurationError, LLMProviderError
+from app.schemas.verified_analysis import VerifiedAnalysis
 
 router = APIRouter(tags=["analysis"])
 
 
-@router.post("/api/analyze")
+@router.post("/api/analyze", response_model=VerifiedAnalysis)
 async def analyze_endpoint(
     resume: UploadFile = File(...),
     job_description: UploadFile = File(...),

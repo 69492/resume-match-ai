@@ -2,6 +2,5 @@ fastapi
 uvicorn[standard]
 pymupdf
 python-multipart
-pytest
 httpx
 sentence-transformers

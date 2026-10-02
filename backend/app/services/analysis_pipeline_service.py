@@ -69,6 +69,8 @@ async def analyze_documents(resume_file: UploadFile, jd_file: UploadFile, llm_se
         vectors = generate_embeddings(units)
     except RuntimeError as exc:
         raise AnalysisPipelineError(str(exc)) from exc
+    if len(vectors) != len(units) or any(not vector for vector in vectors):
+        raise AnalysisPipelineError("The embedding service returned an invalid result.")
     items = _embedding_items(units, vectors)
     resume_items, required_items, preferred_items = _similarity_inputs(items)
     try:

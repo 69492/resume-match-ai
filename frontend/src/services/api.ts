@@ -22,9 +22,25 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
+function assertVerifiedAnalysis(value: unknown): asserts value is VerifiedAnalysis {
+  if (!value || typeof value !== "object") throw new Error("The backend returned an invalid analysis response.");
+  const result = value as Record<string, unknown>;
+  const score = result.score as Record<string, unknown> | undefined;
+  const arrays = ["strong_matches", "partial_matches", "missing_skills", "relevant_projects", "recommendations"];
+  if (!score || typeof score.overall_score !== "number" || typeof score.score_label !== "string" || arrays.some((key) => !Array.isArray(result[key]))) {
+    throw new Error("The backend returned an invalid analysis response.");
+  }
+  const summary = result.validation_summary as Record<string, unknown> | undefined;
+  if (!summary || typeof summary.verified_claims !== "number" || typeof summary.corrected_claims !== "number" || typeof summary.rejected_claims !== "number") {
+    throw new Error("The backend returned an invalid verification response.");
+  }
+}
+
 export async function analyzeResume(resumeFile: File, jobDescriptionFile: File): Promise<VerifiedAnalysis> {
   const form = new FormData();
   form.append("resume", resumeFile);
   form.append("job_description", jobDescriptionFile);
-  return request("/api/analyze", { method: "POST", body: form });
+  const result = await request<unknown>("/api/analyze", { method: "POST", body: form });
+  assertVerifiedAnalysis(result);
+  return result;
 }
