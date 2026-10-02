@@ -10,3 +10,4 @@ def _max_pdf_size_bytes() -> int:
 
 
 MAX_PDF_SIZE_BYTES = _max_pdf_size_bytes()
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")

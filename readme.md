@@ -667,6 +667,112 @@ Resume + Job Description
 
 This project is intended for educational and portfolio purposes.
 
+### Phase 6: deterministic match score engine
+
+Phase 6 calculates an explainable overall score directly from the Phase 5 similarity response. It is deterministic and does not call an LLM, regenerate embeddings, recalculate similarity, or inspect PDFs.
+
+The group scores are the averages of the clamped requirement-level similarities, expressed as percentages:
+
+```text
+overall = required_score * required_weight
+        + preferred_score * preferred_weight
+```
+
+The configurable default weights are `0.80` for required requirements and `0.20` for preferred requirements. If only one group exists, that group is normalized to 100% of the score; an absent preferred section therefore does not reduce the score. An input with no requirements returns a clear error.
+
+The score is returned on a `0-100` scale, with the overall value rounded to one decimal place. Initial interpretation bands are: `90-100 Excellent Match`, `75-89.9 Strong Match`, `60-74.9 Moderate Match`, `40-59.9 Weak Match`, and `0-39.9 Low Match`. These are product interpretation bands, not scientifically validated hiring thresholds.
+
+Endpoint: `POST /api/score/analyze`. It accepts the Phase 5 `SimilarityResponse` and returns the overall, required, and preferred scores; configured weights; requirement totals; and strong, partial, and missing counts. The result represents semantic alignment between the supplied resume and job description. It is not hiring probability, an ATS guarantee, a candidate quality score, or an employment prediction.
+
+### Phase 7: LLM analysis and structured JSON
+
+Phase 7 adds an optional backend-only LLM analysis layer. The LLM explains strong and partial matches, identifies missing requirements, selects supplied resume projects, and produces grounded recommendations and a concise summary. It does not calculate similarity or the numerical match score.
+
+`POST /api/analysis/generate` accepts the typed Phase 3 resume and job-description data, Phase 5 similarity results, and the Phase 6 deterministic score. The response separates the authoritative `score` object from the validated `analysis` object. Any score returned by an LLM is ignored.
+
+The provider is isolated behind `llm_service.py` and uses an OpenAI-compatible chat-completions API. Configure it through `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`, and optionally `LLM_BASE_URL`. The API key is never sent to the frontend or committed to the repository.
+
+Prompts delimit resume, job-description, and match-result data as untrusted document content. Pydantic validation and business rules reject malformed output, changed similarity values, unsupported skills, and invented projects. Tests use deterministic provider mocks and never call a real LLM.
+
+The LLM provides career analysis only; the deterministic score represents semantic alignment and is not hiring probability, an ATS guarantee, or an employment prediction.
+
+### Phase 8: evidence verification and hallucination control
+
+Phase 8 verifies Phase 7 output against authoritative Phase 3 resume/JD data, Phase 5 similarity results, and the Phase 6 deterministic score. The LLM generates analysis, but deterministic application data remains authoritative.
+
+Endpoint: `POST /api/analysis/verify`. It returns verified evidence with source type, page number when available, confidence, and an explicit `verified`, `corrected`, or `rejected` status. Similarity values, categories, missing skills, projects, recommendations, and summaries are checked independently. A validation summary reports total, verified, corrected, and rejected claims.
+
+Evidence matching normalizes whitespace, capitalization, punctuation, and harmless wording differences. Unsupported facts, invented skills/projects, fake page references, and recommendations that assert unsupported experience are rejected or corrected using authoritative data. Resume and JD content remains untrusted data and never changes validation rules.
+
+This is deterministic validation, not a complete natural-language fact checker. It may reject nuanced but valid paraphrases and does not prove that extracted source data itself is correct.
+
+### Phase 9: React analysis dashboard
+
+Phase 9 adds the responsive React/Vite dashboard for the complete analysis flow. It provides PDF upload cards, client-side validation, truthful loading and error states, deterministic score presentation, strong/partial/missing skill sections, verified evidence, relevant projects, grounded recommendations, and the evidence validation summary.
+
+The frontend keeps API calls in `frontend/src/services/api.ts` and uses typed contracts in `frontend/src/types/analysis.ts`. A sample preview is available from the navigation so the UI can be reviewed without a backend or real documents. The real workflow calls extraction, embeddings, similarity, scoring, LLM analysis, and evidence verification in sequence; business logic remains in the backend.
+
+Environment variable:
+
+```text
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+Run the application:
+
+```bash
+# Backend
+cd backend
+python -m venv .venv
+# Windows PowerShell: .\\.venv\\Scripts\\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+
+# Frontend, in a second terminal
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. The frontend never receives or stores `LLM_API_KEY`; it communicates only with the backend. The current PDF workflow requires both a resume PDF and a job-description PDF.
+
+Screenshots: to be added after deployment or a local browser capture.
+
+### Phase 10: end-to-end integration
+
+The production workflow is exposed through one multipart endpoint:
+
+```http
+POST /api/analyze
+Form fields: resume, job_description
+```
+
+The pipeline processes each uploaded PDF in memory exactly once:
+
+```text
+React dashboard
+    ↓
+POST /api/analyze
+    ↓
+Document extraction
+    ↓
+Embeddings
+    ↓
+Similarity
+    ↓
+Deterministic score
+    ↓
+LLM analysis
+    ↓
+Evidence verification
+    ↓
+Verified result
+    ↓
+React dashboard
+```
+
+The frontend calls only `/api/analyze` for a real analysis. The orchestration service reuses the Phase 3–8 services and does not persist uploaded files. Configure `FRONTEND_ORIGIN` in the backend environment for local CORS and `VITE_API_BASE_URL` in the frontend environment for the API base URL. The frontend applies a two-minute request timeout and displays a safe user-facing error.
+
 ## Phase 1 setup
 
 The current Phase 1 implementation includes a minimal FastAPI backend and React frontend.
