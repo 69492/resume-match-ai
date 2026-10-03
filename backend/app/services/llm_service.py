@@ -2,7 +2,6 @@ import json
 import logging
 import math
 import os
-import time
 from collections.abc import Callable
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
@@ -11,7 +10,7 @@ from typing import Any
 import httpx
 
 from app.schemas.llm_analysis import AnalysisRequest, LLMAnalysis
-from app.services.prompts.resume_analysis import SYSTEM_PROMPT, build_analysis_prompt, build_repair_prompt
+from app.services.prompts.resume_analysis import SYSTEM_PROMPT, build_analysis_prompt
 
 
 class LLMConfigurationError(ValueError):
@@ -30,16 +29,44 @@ class LLMRateLimitError(LLMProviderError):
         self.retry_after = retry_after
 
 
-class _LLMStructuredShapeError(ValueError):
-    """The decoded response cannot safely be sent to typed validation."""
-
-
 logger = logging.getLogger(__name__)
-_RESPONSE_FORMAT = {"type": "json_object"}
 _DIAGNOSTIC_LIMIT = 1200
-_MAX_RETRIES = 1
-_MAX_BACKOFF_SECONDS = 2.0
-_DEFAULT_BACKOFF_SECONDS = 0.5
+_STRICT_MODELS = {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
+
+_LLM_ANALYSIS_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "strong_matches": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "skill": {"type": "string"}, "similarity": {"type": "number"},
+                "evidence": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {
+                    "text": {"type": "string"}, "source_type": {"type": ["string", "null"]}, "page_number": {"type": ["integer", "null"]},
+                }, "required": ["text", "source_type", "page_number"], "additionalProperties": False}, {"type": "null"}]},
+            }, "required": ["skill", "similarity", "evidence"], "additionalProperties": False,
+        }},
+        "partial_matches": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "skill": {"type": "string"}, "similarity": {"type": "number"},
+                "evidence": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {
+                    "text": {"type": "string"}, "source_type": {"type": ["string", "null"]}, "page_number": {"type": ["integer", "null"]},
+                }, "required": ["text", "source_type", "page_number"], "additionalProperties": False}, {"type": "null"}]},
+            }, "required": ["skill", "similarity", "evidence"], "additionalProperties": False,
+        }},
+        "missing_skills": {"type": "array", "items": {
+            "type": "object", "properties": {"skill": {"type": "string"}},
+            "required": ["skill"], "additionalProperties": False,
+        }},
+        "relevant_projects": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "project": {"type": "string"}, "reason": {"type": "string"}, "evidence": {"type": ["string", "null"]},
+            }, "required": ["project", "reason", "evidence"], "additionalProperties": False,
+        }},
+        "recommendations": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string"},
+    },
+    "required": ["strong_matches", "partial_matches", "missing_skills", "relevant_projects", "recommendations", "summary"],
+    "additionalProperties": False,
+}
 
 
 def _redact_diagnostic(value: Any, secret: str = "") -> str:
@@ -69,6 +96,13 @@ def _response_diagnostic(response: httpx.Response, secret: str = "") -> str:
         return _redact_diagnostic(response.json(), secret)
     except ValueError:
         return _redact_diagnostic(response.text, secret)
+
+
+def _response_format(model: str) -> dict[str, Any]:
+    if model in _STRICT_MODELS:
+        return {"type": "json_schema", "json_schema": {"name": "llm_analysis", "strict": True, "schema": _LLM_ANALYSIS_JSON_SCHEMA}}
+    # Preserve compatibility for non-Groq/OpenAI-compatible models.
+    return {"type": "json_object"}
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
@@ -119,15 +153,8 @@ class LLMService:
             self._validate_shape(decoded)
             return LLMAnalysis.model_validate(decoded)
         except Exception as exc:
-            logger.warning("LLM response requires one bounded schema repair: %s", str(exc)[:500])
-            repaired = self._complete(api_key, model, timeout, base_url, build_repair_prompt(request, decoded))
-            repaired_decoded = self._decode_json(repaired)
-            try:
-                self._validate_shape(repaired_decoded)
-                return LLMAnalysis.model_validate(repaired_decoded)
-            except Exception as repair_exc:
-                logger.error("LLM response parsing failed after repair: structured validation error=%s", str(repair_exc)[:500])
-                raise LLMProviderError("The LLM response failed structured validation.") from repair_exc
+            logger.error("LLM response parsing failed: structured validation error=%s", str(exc)[:500])
+            raise LLMProviderError("The LLM response failed structured validation.") from exc
 
     def _complete(self, api_key: str, model: str, timeout: float, base_url: str, prompt: str) -> Any:
         # A repair uses the same provider, JSON mode, and rate-limit handling.
@@ -146,13 +173,13 @@ class LLMService:
     @staticmethod
     def _validate_shape(value: Any) -> None:
         if not isinstance(value, dict):
-            raise _LLMStructuredShapeError("top-level response must be a JSON object")
+            raise ValueError("top-level response must be a JSON object")
         for field in ("strong_matches", "partial_matches"):
             entries = value.get(field, [])
             if not isinstance(entries, list):
-                raise _LLMStructuredShapeError(f"{field} must be an array")
+                raise ValueError(f"{field} must be an array")
             if any(not isinstance(entry, dict) for entry in entries):
-                raise _LLMStructuredShapeError(f"{field} must contain objects only")
+                raise ValueError(f"{field} must contain objects only")
 
     @staticmethod
     def _request_provider(api_key: str, model: str, timeout: float, base_url: str, prompt: str) -> Any:
@@ -163,56 +190,41 @@ class LLMService:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
-            "response_format": _RESPONSE_FORMAT,
+            "response_format": _response_format(model),
+            "max_completion_tokens": 1200,
+            "reasoning_effort": "low" if model in _STRICT_MODELS else None,
         }
+        payload = {key: value for key, value in payload.items() if value is not None}
         logger.info("Sending LLM request model=%s response_format_sent=%s", model, "response_format" in payload)
-        for attempt in range(_MAX_RETRIES + 1):
-            try:
-                response = httpx.post(
-                    f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
-                    timeout=timeout,
+        try:
+            response = httpx.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=payload,
+                timeout=timeout,
+            )
+            if response.status_code >= 400:
+                logger.error(
+                    "LLM provider HTTP error status=%s model=%s response_format_sent=%s body=%s",
+                    response.status_code, model, "response_format" in payload, _response_diagnostic(response, api_key),
                 )
-                if response.status_code >= 400:
-                    logger.error(
-                        "LLM provider HTTP error status=%s model=%s response_format_sent=%s attempt=%s body=%s",
-                        response.status_code,
-                        model,
-                        "response_format" in payload,
-                        attempt + 1,
-                        _response_diagnostic(response, api_key),
-                    )
-                response.raise_for_status()
-                try:
-                    response_body = response.json()
-                    content = response_body["choices"][0]["message"]["content"]
-                    if not isinstance(content, str) or not content.strip():
-                        raise TypeError("message.content was empty or not a string")
-                except (ValueError, KeyError, IndexError, TypeError) as exc:
-                    logger.error(
-                        "LLM response parsing failed status=%s model=%s response_format_sent=%s error=%s body=%s",
-                        response.status_code,
-                        model,
-                        "response_format" in payload,
-                        str(exc)[:500],
-                        _response_diagnostic(response, api_key),
-                    )
-                    raise LLMProviderError("The LLM provider returned an invalid response.") from exc
-                return content
-            except httpx.TimeoutException as exc:
-                logger.error("LLM provider timeout model=%s response_format_sent=%s", model, "response_format" in payload)
-                raise LLMProviderError("The LLM request timed out.") from exc
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code != 429:
-                    raise LLMProviderError(f"The LLM provider rejected the request (HTTP {exc.response.status_code}).") from exc
-                retry_after = _retry_after_seconds(exc.response)
-                if attempt < _MAX_RETRIES:
-                    delay = min(retry_after if retry_after is not None else _DEFAULT_BACKOFF_SECONDS, _MAX_BACKOFF_SECONDS)
-                    logger.warning("LLM provider rate limited; retrying once after %.3f seconds", delay)
-                    time.sleep(delay)
-                    continue
-                raise LLMRateLimitError(retry_after=retry_after) from exc
-            except httpx.HTTPError as exc:
-                logger.error("LLM provider transport error model=%s error=%s", model, str(exc)[:500])
-                raise LLMProviderError("The LLM provider request failed.") from exc
+            response.raise_for_status()
+            try:
+                response_body = response.json()
+                content = response_body["choices"][0]["message"]["content"]
+                if not isinstance(content, str) or not content.strip():
+                    raise TypeError("message.content was empty or not a string")
+            except (ValueError, KeyError, IndexError, TypeError) as exc:
+                logger.error("LLM response parsing failed status=%s model=%s error=%s body=%s", response.status_code, model, str(exc)[:500], _response_diagnostic(response, api_key))
+                raise LLMProviderError("The LLM provider returned an invalid response.") from exc
+            return content
+        except httpx.TimeoutException as exc:
+            logger.error("LLM provider timeout model=%s response_format_sent=%s", model, "response_format" in payload)
+            raise LLMProviderError("The LLM request timed out.") from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise LLMRateLimitError(retry_after=_retry_after_seconds(exc.response)) from exc
+            raise LLMProviderError(f"The LLM provider rejected the request (HTTP {exc.response.status_code}).") from exc
+        except httpx.HTTPError as exc:
+            logger.error("LLM provider transport error model=%s error=%s", model, str(exc)[:500])
+            raise LLMProviderError("The LLM provider request failed.") from exc
