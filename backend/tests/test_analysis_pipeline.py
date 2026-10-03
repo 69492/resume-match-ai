@@ -9,6 +9,7 @@ from app.schemas.extraction import Experience, JobDescription, Project, ResumePr
 from app.schemas.llm_analysis import LLMAnalysis
 from app.services import analysis_pipeline_service as pipeline
 from app.services.analysis_pipeline_service import AnalysisPipelineError, analyze_documents
+from app.services.llm_service import LLMRateLimitError
 from app.services.pdf_service import ExtractedDocument, ExtractedPage, PDFProcessingError
 from app.services.similarity_service import SimilarityError
 from app.schemas.verified_analysis import VerifiedAnalysis
@@ -149,3 +150,17 @@ def test_analyze_endpoint_returns_verified_result(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["score"]["overall_score"] == 100
+
+
+def test_analyze_endpoint_returns_429_for_exhausted_llm_rate_limit(monkeypatch):
+    async def rate_limited(*args, **kwargs):
+        raise LLMRateLimitError(retry_after=7)
+
+    monkeypatch.setattr("app.api.routes.pipeline.analyze_documents", rate_limited)
+    response = client.post(
+        "/api/analyze",
+        files={"resume": ("resume.pdf", b"%PDF", "application/pdf"), "job_description": ("jd.pdf", b"%PDF", "application/pdf")},
+    )
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "7"
+    assert "rate limit" in response.json()["detail"]
