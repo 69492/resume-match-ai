@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from app.schemas.llm_analysis import AnalysisRequest, LLMAnalysis
-from app.services.prompts.resume_analysis import SYSTEM_PROMPT, build_analysis_prompt
+from app.services.prompts.resume_analysis import SYSTEM_PROMPT, build_analysis_prompt, build_repair_prompt
 
 
 class LLMConfigurationError(ValueError):
@@ -28,6 +28,10 @@ class LLMRateLimitError(LLMProviderError):
     def __init__(self, message: str = "The LLM provider rate limit was exceeded.", retry_after: float | None = None):
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class _LLMStructuredShapeError(ValueError):
+    """The decoded response cannot safely be sent to typed validation."""
 
 
 logger = logging.getLogger(__name__)
@@ -109,18 +113,46 @@ class LLMService:
     def analyze_match(self, request: AnalysisRequest) -> LLMAnalysis:
         api_key, model, timeout, base_url = _settings()
         prompt = build_analysis_prompt(request)
-        raw = self._provider(api_key, model, timeout, prompt) if self._provider else self._request_provider(api_key, model, timeout, base_url, prompt)
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                logger.error("LLM response parsing failed: malformed JSON error=%s", str(exc)[:500])
-                raise LLMProviderError("The LLM returned malformed structured output.") from exc
+        raw = self._complete(api_key, model, timeout, base_url, prompt)
+        decoded = self._decode_json(raw)
         try:
-            return LLMAnalysis.model_validate(raw)
+            self._validate_shape(decoded)
+            return LLMAnalysis.model_validate(decoded)
         except Exception as exc:
-            logger.error("LLM response parsing failed: structured validation error=%s", str(exc)[:500])
-            raise LLMProviderError("The LLM response failed structured validation.") from exc
+            logger.warning("LLM response requires one bounded schema repair: %s", str(exc)[:500])
+            repaired = self._complete(api_key, model, timeout, base_url, build_repair_prompt(request, decoded))
+            repaired_decoded = self._decode_json(repaired)
+            try:
+                self._validate_shape(repaired_decoded)
+                return LLMAnalysis.model_validate(repaired_decoded)
+            except Exception as repair_exc:
+                logger.error("LLM response parsing failed after repair: structured validation error=%s", str(repair_exc)[:500])
+                raise LLMProviderError("The LLM response failed structured validation.") from repair_exc
+
+    def _complete(self, api_key: str, model: str, timeout: float, base_url: str, prompt: str) -> Any:
+        # A repair uses the same provider, JSON mode, and rate-limit handling.
+        return self._provider(api_key, model, timeout, prompt) if self._provider else self._request_provider(api_key, model, timeout, base_url, prompt)
+
+    @staticmethod
+    def _decode_json(raw: Any) -> Any:
+        if not isinstance(raw, str):
+            return raw
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.error("LLM response parsing failed: malformed JSON error=%s", str(exc)[:500])
+            raise LLMProviderError("The LLM returned malformed structured output.") from exc
+
+    @staticmethod
+    def _validate_shape(value: Any) -> None:
+        if not isinstance(value, dict):
+            raise _LLMStructuredShapeError("top-level response must be a JSON object")
+        for field in ("strong_matches", "partial_matches"):
+            entries = value.get(field, [])
+            if not isinstance(entries, list):
+                raise _LLMStructuredShapeError(f"{field} must be an array")
+            if any(not isinstance(entry, dict) for entry in entries):
+                raise _LLMStructuredShapeError(f"{field} must contain objects only")
 
     @staticmethod
     def _request_provider(api_key: str, model: str, timeout: float, base_url: str, prompt: str) -> Any:

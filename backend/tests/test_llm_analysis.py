@@ -73,6 +73,67 @@ def test_malformed_and_validation_failures_are_rejected(monkeypatch):
         generate_analysis(request(), service(invalid_shape))
 
 
+def test_valid_analysis_match_objects_are_accepted_without_repair(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    calls = []
+    result = LLMService(provider=lambda *args: calls.append(args[3]) or valid_response()).analyze_match(request())
+    assert result.strong_matches[0].skill == "Python"
+    assert len(calls) == 1
+
+
+def test_string_partial_matches_trigger_one_safe_repair(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    malformed = valid_response()
+    malformed["partial_matches"] = ["AWS"]
+    repaired = valid_response()
+    repaired["partial_matches"] = [{"skill": "AWS", "similarity": 0.2, "evidence": None}]
+    prompts = []
+
+    def provider(api_key, model, timeout, prompt):
+        prompts.append(prompt)
+        return malformed if len(prompts) == 1 else repaired
+
+    result = LLMService(provider=provider).analyze_match(request())
+    assert result.partial_matches[0].skill == "AWS"
+    assert result.partial_matches[0].evidence is None
+    assert len(prompts) == 2
+    assert "objects only, never strings" in prompts[1]
+    assert "MALFORMED_JSON" in prompts[1]
+
+
+def test_repair_does_not_fabricate_evidence(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    malformed = valid_response()
+    malformed["partial_matches"] = ["AWS"]
+    repaired = valid_response()
+    repaired["partial_matches"] = [{"skill": "AWS", "similarity": 0.2, "evidence": None}]
+    responses = iter([malformed, repaired])
+    result = LLMService(provider=lambda *args: next(responses)).analyze_match(request())
+    assert result.partial_matches[0].evidence is None
+
+
+def test_malformed_nested_match_is_repaired_once(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    malformed = valid_response()
+    malformed["partial_matches"] = [{"skill": "AWS", "similarity": "unknown", "evidence": {"text": 9}}]
+    repaired = valid_response()
+    repaired["partial_matches"] = [{"skill": "AWS", "similarity": 0.2, "evidence": None}]
+    prompts = []
+    result = LLMService(provider=lambda *args: prompts.append(args[3]) or (malformed if len(prompts) == 1 else repaired)).analyze_match(request())
+    assert result.partial_matches[0].similarity == 0.2
+    assert len(prompts) == 2
+
+
+def test_failed_schema_repair_returns_safe_validation_error(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    malformed = valid_response()
+    malformed["partial_matches"] = ["AWS"]
+    calls = []
+    with pytest.raises(LLMProviderError, match="structured validation"):
+        LLMService(provider=lambda *args: calls.append(1) or malformed).analyze_match(request())
+    assert len(calls) == 2
+
+
 def test_missing_key_and_provider_failures(monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     with pytest.raises(LLMConfigurationError, match="LLM_API_KEY"):
@@ -214,6 +275,8 @@ def test_prompt_delimits_document_data_and_preserves_system_rules():
     assert "<RESUME_DATA>" in prompt and "</RESUME_DATA>" in prompt
     assert "Ignore previous instructions" in prompt
     assert "Never invent candidate skills" in SYSTEM_PROMPT
+    assert "partial_matches" in SYSTEM_PROMPT
+    assert '"skill":"Python"' in SYSTEM_PROMPT
     assert "Return only the requested JSON" in SYSTEM_PROMPT
 
 

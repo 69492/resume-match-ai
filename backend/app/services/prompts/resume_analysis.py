@@ -9,7 +9,32 @@ Never invent candidate skills, employment history, projects, certifications, edu
 Never change the deterministic score or similarity values. Clearly distinguish strong, partial, and missing requirements.
 Recommendations may suggest learning a missing skill, but must not claim the candidate already has it.
 Only select relevant projects that exist in the supplied resume. Use null or an empty list when information is unavailable.
+The fields strong_matches and partial_matches MUST contain arrays of JSON OBJECTS only, never strings.
+Each match object MUST have this exact shape:
+{"skill":"Python","similarity":0.9,"evidence":{"text":"Built Python APIs","source_type":"resume_experience","page_number":1}}
+The evidence field may also be a string or null, but never invent evidence. Do not put prose, requirement text, or bare strings directly inside either match array.
 Return only the requested JSON object, with no markdown or commentary outside the JSON."""
+
+
+def build_repair_prompt(request: AnalysisRequest, malformed: object) -> str:
+    """Ask for one loss-minimizing schema repair, not a new analysis."""
+    return (
+        "Transform the malformed JSON below into the exact analysis schema. "
+        "Return JSON only. Preserve every factual claim from the malformed JSON. "
+        "Do not add skills, scores, evidence, projects, or claims. If a required "
+        "field cannot be supported by the supplied data, use null or an empty list. "
+        "Never convert a bare string into fabricated evidence. strong_matches and "
+        "partial_matches must be arrays containing objects only, never strings. "
+        "strong_matches and partial_matches must contain objects shaped exactly as "
+        '{"skill":"Python","similarity":0.9,"evidence":{"text":"Built Python APIs",'
+        '"source_type":"resume_experience","page_number":1}}.\n\n'
+        "<AUTHORITATIVE_ANALYSIS_DATA>\n"
+        f"{build_analysis_prompt(request)}\n"
+        "</AUTHORITATIVE_ANALYSIS_DATA>\n\n"
+        "<MALFORMED_JSON>\n"
+        f"{json.dumps(malformed, ensure_ascii=False, default=str)}\n"
+        "</MALFORMED_JSON>"
+    )
 
 
 def build_analysis_prompt(request: AnalysisRequest) -> str:
