@@ -24,6 +24,11 @@ class Education(SourceItem):
     graduation_year: str | None = None
 
 
+class RequirementSource(SourceItem):
+    """Source evidence retained for a job-description requirement."""
+    requirement_type: str | None = None
+
+
 class Certification(SourceItem):
     name: str | None = None
     issuer: str | None = None
@@ -56,6 +61,11 @@ class JobDescription(BaseModel):
     experience_requirements: list[str] = []
     education_requirements: list[str] = []
     responsibilities: list[str] = []
+    required_sources: list[RequirementSource] = []
+    preferred_sources: list[RequirementSource] = []
+    responsibility_sources: list[RequirementSource] = []
+    experience_requirement_sources: list[RequirementSource] = []
+    education_requirement_sources: list[RequirementSource] = []
 
 
 class ExtractionResponse(BaseModel):

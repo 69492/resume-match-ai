@@ -12,8 +12,8 @@ HEADING_ALIASES = {
     "projects": {"projects", "personal projects", "academic projects"},
     "education": {"education", "academic background"},
     "certifications": {"certifications", "certificates"},
-    "required": {"requirements", "required qualifications", "required skills", "must have"},
-    "preferred": {"preferred qualifications", "preferred skills", "nice to have"},
+    "required": {"requirements", "required", "required qualifications", "required skills", "must have", "must-have", "qualifications", "technical skills", "technical requirements", "required experience"},
+    "preferred": {"preferred qualifications", "preferred skills", "nice to have", "nice-to-have", "preferred"},
     "responsibilities": {"responsibilities", "what you'll do", "duties"},
     "technologies": {"technologies", "technology stack"},
 }
