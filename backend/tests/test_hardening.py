@@ -1,9 +1,11 @@
 from io import BytesIO
+import logging
 
 import fitz
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.analysis_service import AnalysisValidationError
 
 client = TestClient(app)
 
@@ -54,6 +56,21 @@ def test_error_responses_do_not_expose_paths_or_credentials():
     assert "Traceback" not in body
     assert "C:\\Users" not in body
     assert "LLM_API_KEY" not in body
+
+
+def test_bad_analysis_logs_safe_reason_without_claim_text(monkeypatch, caplog):
+    async def failing_pipeline(*args, **kwargs):
+        raise AnalysisValidationError("Unsupported partial match: Resume Secret Skill")
+
+    monkeypatch.setattr("app.api.routes.pipeline.analyze_documents", failing_pipeline)
+    with caplog.at_level(logging.WARNING, logger="app.api.routes.pipeline"):
+        response = client.post(
+            "/api/analyze",
+            files={"resume": ("resume.pdf", pdf(), "application/pdf"), "job_description": ("jd.pdf", pdf(), "application/pdf")},
+        )
+    assert response.status_code == 400
+    assert "reason=unsupported_partial_match" in caplog.text
+    assert "Resume Secret Skill" not in caplog.text
 
 
 def test_html_in_document_is_data_not_executable_content():
