@@ -13,10 +13,11 @@ from app.schemas.verified_analysis import (
     VerifiedProject,
     VerifiedRecommendation,
 )
+from app.services.match_normalization import match_key
 
 
 def _key(value: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+    return match_key(value)
 
 
 def _tokens(value: str) -> set[str]:

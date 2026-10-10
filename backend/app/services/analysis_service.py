@@ -1,45 +1,67 @@
 from app.schemas.llm_analysis import AnalysisRequest, AnalysisResponse, AnalysisScore, LLMAnalysis
 from app.services.llm_service import LLMService
+from app.services.match_normalization import match_key
 
 
 class AnalysisValidationError(ValueError):
     pass
 
 
-def _key(value: str) -> str:
-    return " ".join(value.casefold().split())
+def _authoritative_matches(request: AnalysisRequest):
+    return {match_key(match.requirement): match for match in request.similarity.matches}
 
 
-def _validate_business_rules(request: AnalysisRequest, analysis: LLMAnalysis) -> None:
-    matches = {_key(match.requirement): match for match in request.similarity.matches}
-    for item in [*analysis.strong_matches, *analysis.partial_matches]:
-        source = matches.get(_key(item.skill))
-        expected = "strong" if item in analysis.strong_matches else "partial"
-        if source is None or source.category != expected:
+def _sanitize_analysis(request: AnalysisRequest, analysis: LLMAnalysis) -> LLMAnalysis:
+    """Keep only claims represented by Phase 5, repairing harmless label variants."""
+    matches = _authoritative_matches(request)
+
+    def valid_match(item, expected: str):
+        source = matches.get(match_key(item.skill))
+        if source is None:
+            return None
+        if source.category != expected:
             raise AnalysisValidationError(f"Unsupported {expected} match: {item.skill}")
         if abs(item.similarity - source.similarity) > 1e-6:
             raise AnalysisValidationError(f"Similarity changed for match: {item.skill}")
-    for item in analysis.missing_skills:
-        source = matches.get(_key(item.skill))
-        if source is None or source.category != "missing":
-            raise AnalysisValidationError(f"Unsupported missing skill: {item.skill}")
+        return item.model_copy(update={"skill": source.requirement, "similarity": source.similarity})
 
-    projects = {
-        _key(project.name or project.text)
-        for project in request.resume.projects
-        if (project.name or project.text).strip()
-    }
+    strong = []
+    for item in analysis.strong_matches:
+        repaired = valid_match(item, "strong")
+        if repaired is None:
+            raise AnalysisValidationError(f"Unsupported strong match: {item.skill}")
+        strong.append(repaired)
+    # An extra partial claim is safely discarded. It has no Phase 5 authority
+    # and therefore cannot enter verification or affect the deterministic score.
+    partial = [repaired for item in analysis.partial_matches if (repaired := valid_match(item, "partial")) is not None]
+    missing = []
+    for item in analysis.missing_skills:
+        source = matches.get(match_key(item.skill))
+        if source and source.category == "missing":
+            missing.append(item.model_copy(update={"skill": source.requirement}))
+        elif source is None:
+            raise AnalysisValidationError(f"Unsupported missing skill: {item.skill}")
+    projects = []
+    project_keys = {match_key(project.name or project.text): project for project in request.resume.projects if (project.name or project.text).strip()}
     for item in analysis.relevant_projects:
-        if _key(item.project) not in projects:
+        project = project_keys.get(match_key(item.project))
+        if project:
+            projects.append(item.model_copy(update={"project": project.name or project.text}))
+        else:
             raise AnalysisValidationError(f"Unsupported project: {item.project}")
+    return analysis.model_copy(update={
+        "strong_matches": strong,
+        "partial_matches": partial,
+        "missing_skills": missing,
+        "relevant_projects": projects,
+    })
 
 
 def generate_analysis(request: AnalysisRequest, llm_service: LLMService | None = None) -> AnalysisResponse:
     if not request.similarity.matches:
         raise AnalysisValidationError("Analysis requires at least one similarity result.")
     service = llm_service or LLMService()
-    analysis = service.analyze_match(request)
-    _validate_business_rules(request, analysis)
+    analysis = _sanitize_analysis(request, service.analyze_match(request))
     score = request.score
     return AnalysisResponse(
         score=AnalysisScore(
