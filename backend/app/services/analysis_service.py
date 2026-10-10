@@ -39,8 +39,9 @@ def _sanitize_analysis(request: AnalysisRequest, analysis: LLMAnalysis) -> LLMAn
         source = matches.get(match_key(item.skill))
         if source and source.category == "missing":
             missing.append(item.model_copy(update={"skill": source.requirement}))
-        elif source is None:
-            raise AnalysisValidationError(f"Unsupported missing skill: {item.skill}")
+        # Missing claims are informational only. Keep the authoritative Phase 5
+        # claims, but discard an LLM claim that has no Phase 5 source instead
+        # of failing otherwise valid analysis.
     projects = []
     project_keys = {match_key(project.name or project.text): project for project in request.resume.projects if (project.name or project.text).strip()}
     for item in analysis.relevant_projects:

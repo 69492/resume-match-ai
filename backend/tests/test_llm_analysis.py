@@ -239,12 +239,27 @@ def test_invented_skill_and_project_are_rejected(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     invented_skill = valid_response()
     invented_skill["missing_skills"] = [{"skill": "Docker"}]
-    with pytest.raises(AnalysisValidationError, match="Unsupported missing skill"):
-        generate_analysis(request(), service(invented_skill))
+    result = generate_analysis(request(), service(invented_skill))
+    assert result.analysis.missing_skills == []
     invented_project = valid_response()
     invented_project["relevant_projects"] = [{"project": "Invented", "reason": "Not supplied"}]
     with pytest.raises(AnalysisValidationError, match="Unsupported project"):
         generate_analysis(request(), service(invented_project))
+
+
+def test_unsupported_missing_skill_is_discarded_and_score_is_preserved(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    value = valid_response()
+    value["missing_skills"] = [{"skill": "Docker"}, {"skill": "AWS"}]
+    result = generate_analysis(request(), service(value))
+    assert [item.skill for item in result.analysis.missing_skills] == ["AWS"]
+    assert result.score.overall_score == 76.0
+
+
+def test_authoritative_missing_skill_is_preserved(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    result = generate_analysis(request(), service(valid_response()))
+    assert result.analysis.missing_skills[0].skill == "AWS"
 
 
 def test_full_stack_label_variant_uses_authoritative_partial_match(monkeypatch):
